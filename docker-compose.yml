@@ -1,0 +1,89 @@
+services:
+  init:
+    image: busybox
+    container_name: telegram-scheduler-init
+    command: sh -c "mkdir -p /data && chown -R 1000:1000 /data"
+    volumes:
+      - ./data:/data
+
+  db:
+    image: postgres:16-alpine
+    container_name: telegram-scheduler-db
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: telegram-scheduler-redis
+    restart: unless-stopped
+
+  web:
+    build: .
+    container_name: telegram-scheduler-web
+    restart: unless-stopped
+    ports:
+      - "8024:8024"
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - ./data:/data
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             python manage.py ensure_admin &&
+             gunicorn app.wsgi:application --bind 0.0.0.0:8024 --workers 3"
+
+  celery:
+    build: .
+    container_name: telegram-scheduler-celery
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - ./data:/data
+    command: celery -A app worker -l INFO
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      db:
+        condition: service_healthy
+
+  celery-beat:
+    build: .
+    container_name: telegram-scheduler-celery-beat
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - ./data:/data
+    command: celery -A app beat -l INFO
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
